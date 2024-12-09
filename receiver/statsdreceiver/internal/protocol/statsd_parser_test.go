@@ -308,7 +308,7 @@ func Test_ParseMessageToMetric(t *testing.T) {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Len(t, got, 1)
+				require.Len(t, got, 1)
 				assert.Equal(t, tt.wantMetric, got[0])
 			}
 		})
@@ -537,7 +537,7 @@ func Test_ParseMessageToMetricWithMetricType(t *testing.T) {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Len(t, got, 1)
+				require.Len(t, got, 1)
 				assert.Equal(t, tt.wantMetric, got[0])
 			}
 		})
@@ -603,7 +603,7 @@ func Test_ParseMessageToMetricWithSimpleTags(t *testing.T) {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Len(t, got, 1)
+				require.Len(t, got, 1)
 				assert.Equal(t, tt.wantMetric, got[0])
 			}
 		})
@@ -645,6 +645,19 @@ func testStatsDMetric(
 		sampleRate: sampleRate,
 		timestamp:  timestamp,
 	}
+}
+
+func testStatsDMetrics(
+	name string, values []float64,
+	addition bool, metricType MetricType,
+	sampleRate float64, labelKeys []string,
+	labelValue []string, timestamp uint64,
+) []statsDMetric {
+	metrics := make([]statsDMetric, len(values))
+	for i, v := range values {
+		metrics[i] = testStatsDMetric(name, v, false, metricType, sampleRate, labelKeys, labelValue, timestamp)
+	}
+	return metrics
 }
 
 func testDescription(name string, metricType MetricType, keys []string, values []string) statsDMetricDescription {
@@ -1964,4 +1977,68 @@ func TestStatsDParser_IPOnlyAggregation(t *testing.T) {
 		Metrics().At(0).Sum().DataPoints().At(0).IntValue()
 
 	assert.Equal(t, int64(4), value)
+}
+
+func Test_ParseMessageWithMultipleValuesToMetric(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantMetrics []statsDMetric
+		err         error
+	}{
+		{
+			name:  "multiple int values",
+			input: "test.metric:42:41:43|c|#key:value",
+			wantMetrics: testStatsDMetrics(
+				"test.metric",
+				[]float64{42, 41, 43},
+				false,
+				"c",
+				0.0,
+				[]string{"key"},
+				[]string{"value"},
+				0,
+			),
+		},
+		{
+			name:  "multiple float values",
+			input: "test.metric:42.1:41.2:43.3|c|#key:value",
+			wantMetrics: testStatsDMetrics(
+				"test.metric",
+				[]float64{42.1, 41.2, 43.3},
+				false,
+				"c",
+				0.0,
+				[]string{"key"},
+				[]string{"value"},
+				0,
+			),
+		},
+		{
+			name:  "mixed float and ints",
+			input: "test.metric:42.0:41:43.123|c|#key:value",
+			wantMetrics: testStatsDMetrics(
+				"test.metric",
+				[]float64{42.0, 41, 43.123},
+				false,
+				"c",
+				0.0,
+				[]string{"key"},
+				[]string{"value"},
+				0,
+			),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseMessageToMetrics(tt.input, false, false)
+
+			if tt.err != nil {
+				assert.Equal(t, tt.err, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantMetrics, got)
+			}
+		})
+	}
 }
