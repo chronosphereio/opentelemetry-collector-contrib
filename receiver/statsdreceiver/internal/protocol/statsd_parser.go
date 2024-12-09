@@ -289,11 +289,6 @@ func (p *StatsDParser) observerCategoryFor(t MetricType) ObserverCategory {
 
 // Aggregate for each metric line.
 func (p *StatsDParser) Aggregate(line string, addr net.Addr) error {
-	parsedMetric, err := parseMessageToMetric(line, p.enableMetricType, p.enableSimpleTags)
-	if err != nil {
-		return err
-	}
-
 	addrKey := newNetAddr(addr)
 	if p.enableIPOnlyAggregation {
 		addrKey = newIPOnlyNetAddr(addr)
@@ -305,94 +300,101 @@ func (p *StatsDParser) Aggregate(line string, addr net.Addr) error {
 		p.instrumentsByAddress[addrKey] = instrument
 	}
 
-	switch parsedMetric.description.metricType {
-	case GaugeType:
-		_, ok := instrument.gauges[parsedMetric.description]
-		if !ok {
-			instrument.gauges[parsedMetric.description] = buildGaugeMetric(parsedMetric, timeNowFunc())
-		} else {
-			if parsedMetric.addition {
-				point := instrument.gauges[parsedMetric.description].Metrics().At(0).Gauge().DataPoints().At(0)
-				point.SetDoubleValue(point.DoubleValue() + parsedMetric.gaugeValue())
-			} else {
+	parsedMetrics, err := parseMessageToMetrics(line, p.enableMetricType, p.enableSimpleTags)
+	if err != nil {
+		return err
+	}
+
+	for _, parsedMetric := range parsedMetrics {
+		switch parsedMetric.description.metricType {
+		case GaugeType:
+			_, ok := instrument.gauges[parsedMetric.description]
+			if !ok {
 				instrument.gauges[parsedMetric.description] = buildGaugeMetric(parsedMetric, timeNowFunc())
-			}
-		}
-
-	case CounterType:
-		_, ok := instrument.counters[parsedMetric.description]
-		if !ok {
-			instrument.counters[parsedMetric.description] = buildCounterMetric(parsedMetric, p.isMonotonicCounter)
-		} else {
-			point := instrument.counters[parsedMetric.description].Metrics().At(0).Sum().DataPoints().At(0)
-			point.SetIntValue(point.IntValue() + parsedMetric.counterValue())
-		}
-
-	case TimingType, HistogramType, DistributionType:
-		category := p.observerCategoryFor(parsedMetric.description.metricType)
-		switch category.method {
-		case GaugeObserver:
-			instrument.timersAndDistributions = append(instrument.timersAndDistributions, buildGaugeMetric(parsedMetric, timeNowFunc()))
-		case SummaryObserver:
-			raw := parsedMetric.sampleValue()
-			if existing, ok := instrument.summaries[parsedMetric.description]; !ok {
-				instrument.summaries[parsedMetric.description] = summaryMetric{
-					points:      []float64{raw.value},
-					weights:     []float64{raw.count},
-					percentiles: category.summaryPercentiles,
-				}
 			} else {
-				instrument.summaries[parsedMetric.description] = summaryMetric{
-					points:      append(existing.points, raw.value),
-					weights:     append(existing.weights, raw.count),
-					percentiles: category.summaryPercentiles,
+				if parsedMetric.addition {
+					point := instrument.gauges[parsedMetric.description].Metrics().At(0).Gauge().DataPoints().At(0)
+					point.SetDoubleValue(point.DoubleValue() + parsedMetric.gaugeValue())
+				} else {
+					instrument.gauges[parsedMetric.description] = buildGaugeMetric(parsedMetric, timeNowFunc())
 				}
 			}
-		case HistogramObserver:
-			raw := parsedMetric.sampleValue()
-			var agg *histogramStructure
-			if existing, ok := instrument.histograms[parsedMetric.description]; ok {
-				agg = existing.agg
+
+		case CounterType:
+			_, ok := instrument.counters[parsedMetric.description]
+			if !ok {
+				instrument.counters[parsedMetric.description] = buildCounterMetric(parsedMetric, p.isMonotonicCounter)
 			} else {
-				agg = new(histogramStructure)
-				agg.Init(category.histogramConfig)
-
-				instrument.histograms[parsedMetric.description] = histogramMetric{
-					agg: agg,
-				}
+				point := instrument.counters[parsedMetric.description].Metrics().At(0).Sum().DataPoints().At(0)
+				point.SetIntValue(point.IntValue() + parsedMetric.counterValue())
 			}
-			agg.UpdateByIncr(
-				raw.value,
-				uint64(raw.count), // Note! Rounding float64 to uint64 here.
-			)
 
-		case DisableObserver:
-			// No action.
+		case TimingType, HistogramType, DistributionType:
+			category := p.observerCategoryFor(parsedMetric.description.metricType)
+			switch category.method {
+			case GaugeObserver:
+				instrument.timersAndDistributions = append(instrument.timersAndDistributions, buildGaugeMetric(parsedMetric, timeNowFunc()))
+			case SummaryObserver:
+				raw := parsedMetric.sampleValue()
+				if existing, ok := instrument.summaries[parsedMetric.description]; !ok {
+					instrument.summaries[parsedMetric.description] = summaryMetric{
+						points:      []float64{raw.value},
+						weights:     []float64{raw.count},
+						percentiles: category.summaryPercentiles,
+					}
+				} else {
+					instrument.summaries[parsedMetric.description] = summaryMetric{
+						points:      append(existing.points, raw.value),
+						weights:     append(existing.weights, raw.count),
+						percentiles: category.summaryPercentiles,
+					}
+				}
+			case HistogramObserver:
+				raw := parsedMetric.sampleValue()
+				var agg *histogramStructure
+				if existing, ok := instrument.histograms[parsedMetric.description]; ok {
+					agg = existing.agg
+				} else {
+					agg = new(histogramStructure)
+					agg.Init(category.histogramConfig)
+
+					instrument.histograms[parsedMetric.description] = histogramMetric{
+						agg: agg,
+					}
+				}
+				agg.UpdateByIncr(
+					raw.value,
+					uint64(raw.count), // Note! Rounding float64 to uint64 here.
+				)
+
+			case DisableObserver:
+				// No action.
+			}
 		}
 	}
 
 	return nil
 }
 
-func parseMessageToMetric(line string, enableMetricType bool, enableSimpleTags bool) (statsDMetric, error) {
+func parseMessageToMetrics(line string, enableMetricType bool, enableSimpleTags bool) ([]statsDMetric, error) {
 	result := statsDMetric{}
 
 	nameValue, rest, foundName := strings.Cut(line, "|")
 	if !foundName {
-		return result, fmt.Errorf("invalid message format: %s", line)
+		return nil, fmt.Errorf("invalid message format: %s", line)
 	}
 
 	name, valueStr, foundValue := strings.Cut(nameValue, ":")
 	if !foundValue {
-		return result, fmt.Errorf("invalid <name>:<value> format: %s", nameValue)
+		return nil, fmt.Errorf("invalid <name>:<value> format: %s", nameValue)
 	}
 
 	if name == "" {
-		return result, errEmptyMetricName
+		return nil, errEmptyMetricName
 	}
 	result.description.name = name
 	if valueStr == "" {
-		return result, errEmptyMetricValue
+		return nil, errEmptyMetricValue
 	}
 	if strings.HasPrefix(valueStr, "-") || strings.HasPrefix(valueStr, "+") {
 		result.addition = true
@@ -404,7 +406,7 @@ func parseMessageToMetric(line string, enableMetricType bool, enableSimpleTags b
 	case CounterType, GaugeType, HistogramType, TimingType, DistributionType:
 		result.description.metricType = inType
 	default:
-		return result, fmt.Errorf("unsupported metric type: %s", inType)
+		return nil, fmt.Errorf("unsupported metric type: %s", inType)
 	}
 
 	var kvs []attribute.KeyValue
@@ -418,7 +420,7 @@ func parseMessageToMetric(line string, enableMetricType bool, enableSimpleTags b
 
 			f, err := strconv.ParseFloat(sampleRateStr, 64)
 			if err != nil {
-				return result, fmt.Errorf("parse sample rate: %s", sampleRateStr)
+				return nil, fmt.Errorf("parse sample rate: %s", sampleRateStr)
 			}
 
 			result.sampleRate = f
@@ -436,13 +438,13 @@ func parseMessageToMetric(line string, enableMetricType bool, enableSimpleTags b
 			for ; len(tagSet) > 0; tagSet, tagsStr, _ = strings.Cut(tagsStr, ",") {
 				k, v, _ := strings.Cut(tagSet, ":")
 				if k == "" {
-					return result, fmt.Errorf("invalid tag format: %q", tagSet)
+					return nil, fmt.Errorf("invalid tag format: %q", tagSet)
 				}
 
 				// support both simple tags (w/o value) and dimension tags (w/ value).
 				// dogstatsd notably allows simple tags.
 				if v == "" && !enableSimpleTags {
-					return result, fmt.Errorf("invalid tag format: %q", tagSet)
+					return nil, fmt.Errorf("invalid tag format: %q", tagSet)
 				}
 
 				kvs = append(kvs, attribute.String(k, v))
@@ -459,24 +461,19 @@ func parseMessageToMetric(line string, enableMetricType bool, enableSimpleTags b
 			// As per DogStatD protocol v1.3:
 			// https://docs.datadoghq.com/developers/dogstatsd/datagram_shell/?tab=metrics#dogstatsd-protocol-v13
 			if inType != CounterType && inType != GaugeType {
-				return result, errors.New("only GAUGE and COUNT metrics support a timestamp")
+				return nil, errors.New("only GAUGE and COUNT metrics support a timestamp")
 			}
 
 			timestampStr := strings.TrimPrefix(part, "T")
 			timestampSeconds, err := strconv.ParseUint(timestampStr, 10, 64)
 			if err != nil {
-				return result, fmt.Errorf("invalid timestamp: %s", timestampStr)
+				return nil, fmt.Errorf("invalid timestamp: %s", timestampStr)
 			}
 
 			result.timestamp = timestampSeconds * 1e9 // Convert seconds to nanoseconds
 		default:
-			return result, fmt.Errorf("unrecognized message part: %s", part)
+			return nil, fmt.Errorf("unrecognized message part: %s", part)
 		}
-	}
-	var err error
-	result.asFloat, err = strconv.ParseFloat(valueStr, 64)
-	if err != nil {
-		return result, fmt.Errorf("parse metric value string: %s", valueStr)
 	}
 
 	// add metric_type dimension for all metrics
@@ -490,7 +487,19 @@ func parseMessageToMetric(line string, enableMetricType bool, enableSimpleTags b
 		result.description.attrs = attribute.NewSet(kvs...)
 	}
 
-	return result, nil
+	valueStrParts := strings.Split(valueStr, ":")
+	results := make([]statsDMetric, len(valueStrParts))
+	for i, valueStrPart := range valueStrParts {
+		var err error
+		result.asFloat, err = strconv.ParseFloat(valueStrPart, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse metric value string: %s", valueStr)
+		}
+
+		results[i] = result
+	}
+
+	return results, nil
 }
 
 type netAddr struct {

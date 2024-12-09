@@ -302,13 +302,14 @@ func Test_ParseMessageToMetric(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMessageToMetric(tt.input, false, false)
+			got, err := parseMessageToMetrics(tt.input, false, false)
 
 			if tt.err != nil {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetric, got)
+				assert.Len(t, got, 1)
+				assert.Equal(t, tt.wantMetric, got[0])
 			}
 		})
 	}
@@ -530,13 +531,14 @@ func Test_ParseMessageToMetricWithMetricType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMessageToMetric(tt.input, true, false)
+			got, err := parseMessageToMetrics(tt.input, true, false)
 
 			if tt.err != nil {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetric, got)
+				assert.Len(t, got, 1)
+				assert.Equal(t, tt.wantMetric, got[0])
 			}
 		})
 	}
@@ -595,13 +597,14 @@ func Test_ParseMessageToMetricWithSimpleTags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMessageToMetric(tt.input, false, true)
+			got, err := parseMessageToMetrics(tt.input, false, true)
 
 			if tt.err != nil {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetric, got)
+				assert.Len(t, got, 1)
+				assert.Equal(t, tt.wantMetric, got[0])
 			}
 		})
 	}
