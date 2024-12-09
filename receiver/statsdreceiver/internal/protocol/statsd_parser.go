@@ -289,6 +289,11 @@ func (p *StatsDParser) observerCategoryFor(t MetricType) ObserverCategory {
 
 // Aggregate for each metric line.
 func (p *StatsDParser) Aggregate(line string, addr net.Addr) error {
+	parsedMetrics, err := parseMessageToMetrics(line, p.enableMetricType, p.enableSimpleTags)
+	if err != nil {
+		return err
+	}
+
 	addrKey := newNetAddr(addr)
 	if p.enableIPOnlyAggregation {
 		addrKey = newIPOnlyNetAddr(addr)
@@ -300,80 +305,79 @@ func (p *StatsDParser) Aggregate(line string, addr net.Addr) error {
 		p.instrumentsByAddress[addrKey] = instrument
 	}
 
-	parsedMetrics, err := parseMessageToMetrics(line, p.enableMetricType, p.enableSimpleTags)
-	if err != nil {
-		return err
-	}
-
 	for _, parsedMetric := range parsedMetrics {
-		switch parsedMetric.description.metricType {
-		case GaugeType:
-			_, ok := instrument.gauges[parsedMetric.description]
-			if !ok {
-				instrument.gauges[parsedMetric.description] = buildGaugeMetric(parsedMetric, timeNowFunc())
-			} else {
-				if parsedMetric.addition {
-					point := instrument.gauges[parsedMetric.description].Metrics().At(0).Gauge().DataPoints().At(0)
-					point.SetDoubleValue(point.DoubleValue() + parsedMetric.gaugeValue())
-				} else {
-					instrument.gauges[parsedMetric.description] = buildGaugeMetric(parsedMetric, timeNowFunc())
-				}
-			}
-
-		case CounterType:
-			_, ok := instrument.counters[parsedMetric.description]
-			if !ok {
-				instrument.counters[parsedMetric.description] = buildCounterMetric(parsedMetric, p.isMonotonicCounter)
-			} else {
-				point := instrument.counters[parsedMetric.description].Metrics().At(0).Sum().DataPoints().At(0)
-				point.SetIntValue(point.IntValue() + parsedMetric.counterValue())
-			}
-
-		case TimingType, HistogramType, DistributionType:
-			category := p.observerCategoryFor(parsedMetric.description.metricType)
-			switch category.method {
-			case GaugeObserver:
-				instrument.timersAndDistributions = append(instrument.timersAndDistributions, buildGaugeMetric(parsedMetric, timeNowFunc()))
-			case SummaryObserver:
-				raw := parsedMetric.sampleValue()
-				if existing, ok := instrument.summaries[parsedMetric.description]; !ok {
-					instrument.summaries[parsedMetric.description] = summaryMetric{
-						points:      []float64{raw.value},
-						weights:     []float64{raw.count},
-						percentiles: category.summaryPercentiles,
-					}
-				} else {
-					instrument.summaries[parsedMetric.description] = summaryMetric{
-						points:      append(existing.points, raw.value),
-						weights:     append(existing.weights, raw.count),
-						percentiles: category.summaryPercentiles,
-					}
-				}
-			case HistogramObserver:
-				raw := parsedMetric.sampleValue()
-				var agg *histogramStructure
-				if existing, ok := instrument.histograms[parsedMetric.description]; ok {
-					agg = existing.agg
-				} else {
-					agg = new(histogramStructure)
-					agg.Init(category.histogramConfig)
-
-					instrument.histograms[parsedMetric.description] = histogramMetric{
-						agg: agg,
-					}
-				}
-				agg.UpdateByIncr(
-					raw.value,
-					uint64(raw.count), // Note! Rounding float64 to uint64 here.
-				)
-
-			case DisableObserver:
-				// No action.
-			}
-		}
+		p.aggregateMetric(instrument, parsedMetric)
 	}
 
 	return nil
+}
+
+func (p *StatsDParser) aggregateMetric(instrument *instruments, parsedMetric statsDMetric) {
+	switch parsedMetric.description.metricType {
+	case GaugeType:
+		_, ok := instrument.gauges[parsedMetric.description]
+		if !ok {
+			instrument.gauges[parsedMetric.description] = buildGaugeMetric(parsedMetric, timeNowFunc())
+		} else {
+			if parsedMetric.addition {
+				point := instrument.gauges[parsedMetric.description].Metrics().At(0).Gauge().DataPoints().At(0)
+				point.SetDoubleValue(point.DoubleValue() + parsedMetric.gaugeValue())
+			} else {
+				instrument.gauges[parsedMetric.description] = buildGaugeMetric(parsedMetric, timeNowFunc())
+			}
+		}
+
+	case CounterType:
+		_, ok := instrument.counters[parsedMetric.description]
+		if !ok {
+			instrument.counters[parsedMetric.description] = buildCounterMetric(parsedMetric, p.isMonotonicCounter)
+		} else {
+			point := instrument.counters[parsedMetric.description].Metrics().At(0).Sum().DataPoints().At(0)
+			point.SetIntValue(point.IntValue() + parsedMetric.counterValue())
+		}
+
+	case TimingType, HistogramType, DistributionType:
+		category := p.observerCategoryFor(parsedMetric.description.metricType)
+		switch category.method {
+		case GaugeObserver:
+			instrument.timersAndDistributions = append(instrument.timersAndDistributions, buildGaugeMetric(parsedMetric, timeNowFunc()))
+		case SummaryObserver:
+			raw := parsedMetric.sampleValue()
+			if existing, ok := instrument.summaries[parsedMetric.description]; !ok {
+				instrument.summaries[parsedMetric.description] = summaryMetric{
+					points:      []float64{raw.value},
+					weights:     []float64{raw.count},
+					percentiles: category.summaryPercentiles,
+				}
+			} else {
+				instrument.summaries[parsedMetric.description] = summaryMetric{
+					points:      append(existing.points, raw.value),
+					weights:     append(existing.weights, raw.count),
+					percentiles: category.summaryPercentiles,
+				}
+			}
+		case HistogramObserver:
+			raw := parsedMetric.sampleValue()
+			var agg *histogramStructure
+			if existing, ok := instrument.histograms[parsedMetric.description]; ok {
+				agg = existing.agg
+			} else {
+				agg = new(histogramStructure)
+				agg.Init(category.histogramConfig)
+
+				instrument.histograms[parsedMetric.description] = histogramMetric{
+					agg: agg,
+				}
+			}
+			agg.UpdateByIncr(
+				raw.value,
+				uint64(raw.count), // Note! Rounding float64 to uint64 here.
+			)
+
+		case DisableObserver:
+			// No action.
+		}
+	}
 }
 
 func parseMessageToMetrics(line string, enableMetricType bool, enableSimpleTags bool) ([]statsDMetric, error) {
