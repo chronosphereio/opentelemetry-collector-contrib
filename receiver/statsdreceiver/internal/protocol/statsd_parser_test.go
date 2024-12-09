@@ -1984,7 +1984,7 @@ func Test_ParseMessageWithMultipleValuesToMetric(t *testing.T) {
 		name        string
 		input       string
 		wantMetrics []statsDMetric
-		err         error
+		wantErr     string
 	}{
 		{
 			name:  "multiple int values",
@@ -2028,13 +2028,37 @@ func Test_ParseMessageWithMultipleValuesToMetric(t *testing.T) {
 				0,
 			),
 		},
+		{
+			name:  "value contains zero",
+			input: "test.metric:42:0:3|c|#key:value",
+			wantMetrics: testStatsDMetrics(
+				"test.metric",
+				[]float64{42, 0, 3},
+				false,
+				"c",
+				0.0,
+				[]string{"key"},
+				[]string{"value"},
+				0,
+			),
+		},
+		{
+			name:    "invalid value",
+			input:   "test.metric:42:41.hello|c|#key:value",
+			wantErr: "parse metric value string",
+		},
+		{
+			name:    "trailing colon",
+			input:   "test.metric:42:41:|c|#key:value",
+			wantErr: "parse metric value string",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := parseMessageToMetrics(tt.input, false, false)
 
-			if tt.err != nil {
-				assert.Equal(t, tt.err, err)
+			if tt.wantErr != "" {
+				assert.ErrorContainsf(t, err, tt.wantErr, "")
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.wantMetrics, got)
