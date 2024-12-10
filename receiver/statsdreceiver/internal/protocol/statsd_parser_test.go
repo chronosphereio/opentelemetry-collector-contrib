@@ -92,7 +92,7 @@ func Test_ParseMessageToMetric(t *testing.T) {
 		{
 			name:  "invalid  counter metric value",
 			input: "test.metric:42.abc|c",
-			err:   errors.New("parse metric value string: 42.abc"),
+			err:   errors.New("parse metric value string: n=0, values=42.abc, curr=42.abc"),
 		},
 		{
 			name:  "unhandled metric type",
@@ -190,7 +190,7 @@ func Test_ParseMessageToMetric(t *testing.T) {
 		{
 			name:  "invalid gauge metric value",
 			input: "test.metric:42.abc|g",
-			err:   errors.New("parse metric value string: 42.abc"),
+			err:   errors.New("parse metric value string: n=0, values=42.abc, curr=42.abc"),
 		},
 		{
 			name:  "gauge metric with sample rate and tag",
@@ -273,7 +273,7 @@ func Test_ParseMessageToMetric(t *testing.T) {
 		{
 			name:  "invalid histogram metric value",
 			input: "test.metric:42.abc|h",
-			err:   errors.New("parse metric value string: 42.abc"),
+			err:   errors.New("parse metric value string: n=0, values=42.abc, curr=42.abc"),
 		},
 		{
 			name:  "invalid histogram with timestamp",
@@ -305,11 +305,14 @@ func Test_ParseMessageToMetric(t *testing.T) {
 			got, err := parseMessageToMetrics(tt.input, false, false)
 
 			if tt.err != nil {
+				err = firstStatsDMetricIterError(got, err)
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				require.Len(t, got, 1)
-				assert.Equal(t, tt.wantMetric, got[0])
+				assert.Equal(t, 1, got.len())
+				metric, err := got.metric(0)
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantMetric, metric)
 			}
 		})
 	}
@@ -406,7 +409,7 @@ func Test_ParseMessageToMetricWithMetricType(t *testing.T) {
 		{
 			name:  "invalid gauge metric value",
 			input: "test.metric:42.abc|g",
-			err:   errors.New("parse metric value string: 42.abc"),
+			err:   errors.New("parse metric value string: n=0, values=42.abc, curr=42.abc"),
 		},
 		{
 			name:  "gauge metric with sample rate and tag",
@@ -534,11 +537,14 @@ func Test_ParseMessageToMetricWithMetricType(t *testing.T) {
 			got, err := parseMessageToMetrics(tt.input, true, false)
 
 			if tt.err != nil {
+				err = firstStatsDMetricIterError(got, err)
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				require.Len(t, got, 1)
-				assert.Equal(t, tt.wantMetric, got[0])
+				assert.Equal(t, 1, got.len())
+				metric, err := got.metric(0)
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantMetric, metric)
 			}
 		})
 	}
@@ -603,8 +609,10 @@ func Test_ParseMessageToMetricWithSimpleTags(t *testing.T) {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				require.Len(t, got, 1)
-				assert.Equal(t, tt.wantMetric, got[0])
+				assert.Equal(t, 1, got.len())
+				metric, err := got.metric(0)
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantMetric, metric)
 			}
 		})
 	}
@@ -2050,7 +2058,7 @@ func Test_ParseMessageWithMultipleValuesToMetric(t *testing.T) {
 		{
 			name:    "trailing colon",
 			input:   "test.metric:42:41:|c|#key:value",
-			wantErr: "parse metric value string",
+			wantErr: "empty value for value in values string",
 		},
 	}
 	for _, tt := range tests {
@@ -2058,11 +2066,33 @@ func Test_ParseMessageWithMultipleValuesToMetric(t *testing.T) {
 			got, err := parseMessageToMetrics(tt.input, false, false)
 
 			if tt.wantErr != "" {
+				err = firstStatsDMetricIterError(got, err)
 				assert.ErrorContainsf(t, err, tt.wantErr, "")
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetrics, got)
+
+				var metrics []statsDMetric
+				for i := 0; i < got.len(); i++ {
+					metric, err := got.metric(i)
+					assert.NoError(t, err)
+					metrics = append(metrics, metric)
+				}
+
+				assert.Equal(t, tt.wantMetrics, metrics)
 			}
 		})
 	}
+}
+
+func firstStatsDMetricIterError(iter statsDMetricIter, iterErr error) error {
+	if iterErr != nil {
+		return iterErr
+	}
+	for i := 0; i < iter.len(); i++ {
+		_, err := iter.metric(i)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

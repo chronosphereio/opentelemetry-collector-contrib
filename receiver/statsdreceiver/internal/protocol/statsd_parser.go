@@ -289,7 +289,7 @@ func (p *StatsDParser) observerCategoryFor(t MetricType) ObserverCategory {
 
 // Aggregate for each metric line.
 func (p *StatsDParser) Aggregate(line string, addr net.Addr) error {
-	parsedMetrics, err := parseMessageToMetrics(line, p.enableMetricType, p.enableSimpleTags)
+	iter, err := parseMessageToMetrics(line, p.enableMetricType, p.enableSimpleTags)
 	if err != nil {
 		return err
 	}
@@ -305,8 +305,12 @@ func (p *StatsDParser) Aggregate(line string, addr net.Addr) error {
 		p.instrumentsByAddress[addrKey] = instrument
 	}
 
-	for _, parsedMetric := range parsedMetrics {
-		p.aggregateMetric(instrument, parsedMetric)
+	for i := 0; i < iter.len(); i++ {
+		parseMetric, err := iter.metric(i)
+		if err != nil {
+			return err
+		}
+		p.aggregateMetric(instrument, parseMetric)
 	}
 
 	return nil
@@ -380,26 +384,93 @@ func (p *StatsDParser) aggregateMetric(instrument *instruments, parsedMetric sta
 	}
 }
 
-func parseMessageToMetrics(line string, enableMetricType bool, enableSimpleTags bool) ([]statsDMetric, error) {
-	result := statsDMetric{}
+// statsDMetricIter allows alloc-free iteration over statsDMetric values.
+// This is helpful to support multiple values in a single statsd metric 
+// such as timers, etc.
+type statsDMetricIter struct {
+	statsDMetricProperties
+
+	// valueStr contains potentially many values separated by ":".
+	valueStr string
+	valueCount int
+}
+
+type statsDMetricProperties struct {
+	description statsDMetricDescription
+	addition    bool
+	unit        string
+	sampleRate  float64
+	timestamp   uint64
+}
+
+func (i statsDMetricIter) len() int {
+	return i.valueCount
+}
+
+func (i statsDMetricIter) metric(n int) (statsDMetric, error) {
+	var (
+		curr string
+		rest = i.valueStr
+	)
+	for j := 0; j < i.valueCount; j++ {
+		// Cut is alloc free.
+		curr, rest, _ = strings.Cut(rest, ":")
+		if len(curr) == 0 {
+			return statsDMetric{}, fmt.Errorf(
+				"empty value for value in values string: n=%d, values=%s", n, i.valueStr)
+		}
+
+		if j < n {
+			continue
+		}
+
+		value, err := strconv.ParseFloat(curr, 64)
+		if err != nil {
+			return statsDMetric{}, fmt.Errorf(
+				"parse metric value string: n=%d, values=%s, curr=%s", n, i.valueStr, curr)
+		}
+
+
+		return statsDMetric{
+			description: i.description,
+			asFloat:     value,
+			addition:    i.addition,
+			unit:        i.unit,
+			sampleRate:  i.sampleRate,
+			timestamp:   i.timestamp,
+		}, nil
+	}
+
+	return statsDMetric{}, fmt.Errorf(
+		"out of range for value for in values string: n=%d, values=%s", n, i.valueStr)
+}
+
+func parseMessageToMetrics(
+	line string, 
+	enableMetricType bool, 
+	enableSimpleTags bool,
+) (statsDMetricIter, error) {
+	result := statsDMetricIter{}
 
 	nameValue, rest, foundName := strings.Cut(line, "|")
 	if !foundName {
-		return nil, fmt.Errorf("invalid message format: %s", line)
+		return result, fmt.Errorf("invalid message format: %s", line)
 	}
 
 	name, valueStr, foundValue := strings.Cut(nameValue, ":")
 	if !foundValue {
-		return nil, fmt.Errorf("invalid <name>:<value> format: %s", nameValue)
+		return result, fmt.Errorf("invalid <name>:<value> format: %s", nameValue)
 	}
 
 	if name == "" {
-		return nil, errEmptyMetricName
+		return result, errEmptyMetricName
 	}
 	result.description.name = name
 	if valueStr == "" {
-		return nil, errEmptyMetricValue
+		return result, errEmptyMetricValue
 	}
+	result.valueStr = valueStr
+	result.valueCount = strings.Count(valueStr, ":") + 1
 	if strings.HasPrefix(valueStr, "-") || strings.HasPrefix(valueStr, "+") {
 		result.addition = true
 	}
@@ -410,7 +481,7 @@ func parseMessageToMetrics(line string, enableMetricType bool, enableSimpleTags 
 	case CounterType, GaugeType, HistogramType, TimingType, DistributionType:
 		result.description.metricType = inType
 	default:
-		return nil, fmt.Errorf("unsupported metric type: %s", inType)
+		return result, fmt.Errorf("unsupported metric type: %s", inType)
 	}
 
 	var kvs []attribute.KeyValue
@@ -424,7 +495,7 @@ func parseMessageToMetrics(line string, enableMetricType bool, enableSimpleTags 
 
 			f, err := strconv.ParseFloat(sampleRateStr, 64)
 			if err != nil {
-				return nil, fmt.Errorf("parse sample rate: %s", sampleRateStr)
+				return result, fmt.Errorf("parse sample rate: %s", sampleRateStr)
 			}
 
 			result.sampleRate = f
@@ -442,13 +513,13 @@ func parseMessageToMetrics(line string, enableMetricType bool, enableSimpleTags 
 			for ; len(tagSet) > 0; tagSet, tagsStr, _ = strings.Cut(tagsStr, ",") {
 				k, v, _ := strings.Cut(tagSet, ":")
 				if k == "" {
-					return nil, fmt.Errorf("invalid tag format: %q", tagSet)
+					return result, fmt.Errorf("invalid tag format: %q", tagSet)
 				}
 
 				// support both simple tags (w/o value) and dimension tags (w/ value).
 				// dogstatsd notably allows simple tags.
 				if v == "" && !enableSimpleTags {
-					return nil, fmt.Errorf("invalid tag format: %q", tagSet)
+					return result, fmt.Errorf("invalid tag format: %q", tagSet)
 				}
 
 				kvs = append(kvs, attribute.String(k, v))
@@ -465,18 +536,18 @@ func parseMessageToMetrics(line string, enableMetricType bool, enableSimpleTags 
 			// As per DogStatD protocol v1.3:
 			// https://docs.datadoghq.com/developers/dogstatsd/datagram_shell/?tab=metrics#dogstatsd-protocol-v13
 			if inType != CounterType && inType != GaugeType {
-				return nil, errors.New("only GAUGE and COUNT metrics support a timestamp")
+				return result, errors.New("only GAUGE and COUNT metrics support a timestamp")
 			}
 
 			timestampStr := strings.TrimPrefix(part, "T")
 			timestampSeconds, err := strconv.ParseUint(timestampStr, 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("invalid timestamp: %s", timestampStr)
+				return result, fmt.Errorf("invalid timestamp: %s", timestampStr)
 			}
 
 			result.timestamp = timestampSeconds * 1e9 // Convert seconds to nanoseconds
 		default:
-			return nil, fmt.Errorf("unrecognized message part: %s", part)
+			return result, fmt.Errorf("unrecognized message part: %s", part)
 		}
 	}
 
@@ -491,19 +562,7 @@ func parseMessageToMetrics(line string, enableMetricType bool, enableSimpleTags 
 		result.description.attrs = attribute.NewSet(kvs...)
 	}
 
-	valueStrParts := strings.Split(valueStr, ":")
-	results := make([]statsDMetric, len(valueStrParts))
-	for i, valueStrPart := range valueStrParts {
-		var err error
-		result.asFloat, err = strconv.ParseFloat(valueStrPart, 64)
-		if err != nil {
-			return nil, fmt.Errorf("parse metric value string: %s", valueStr)
-		}
-
-		results[i] = result
-	}
-
-	return results, nil
+	return result, nil
 }
 
 type netAddr struct {
