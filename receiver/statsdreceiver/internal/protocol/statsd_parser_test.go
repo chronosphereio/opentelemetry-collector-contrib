@@ -311,10 +311,10 @@ func Test_ParseMessageToMetric(t *testing.T) {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, 1, got.len())
-				metric, err := got.metric(0)
-				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetric, metric)
+				res, err := got.All()
+				require.NoError(t, err)
+				require.Len(t, res, 1)
+				assert.Equal(t, tt.wantMetric, res[0])
 			}
 		})
 	}
@@ -543,10 +543,10 @@ func Test_ParseMessageToMetricWithMetricType(t *testing.T) {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, 1, got.len())
-				metric, err := got.metric(0)
-				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetric, metric)
+				res, err := got.All()
+				require.NoError(t, err)
+				require.Len(t, res, 1)
+				assert.Equal(t, tt.wantMetric, res[0])
 			}
 		})
 	}
@@ -611,10 +611,10 @@ func Test_ParseMessageToMetricWithSimpleTags(t *testing.T) {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, 1, got.len())
-				metric, err := got.metric(0)
-				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetric, metric)
+				res, err := got.All()
+				require.NoError(t, err)
+				require.Len(t, res, 1)
+				assert.Equal(t, tt.wantMetric, res[0])
 			}
 		})
 	}
@@ -2082,14 +2082,8 @@ func Test_ParseMessageWithMultipleValuesToMetric(t *testing.T) {
 				assert.ErrorContainsf(t, err, tt.wantErr, "")
 			} else {
 				assert.NoError(t, err)
-
-				var metrics []statsDMetric
-				for i := 0; i < got.len(); i++ {
-					metric, err := got.metric(i)
-					assert.NoError(t, err)
-					metrics = append(metrics, metric)
-				}
-
+				metrics, err := got.All()
+				require.NoError(t, err)
 				assert.Equal(t, tt.wantMetrics, metrics)
 			}
 		})
@@ -2143,11 +2137,6 @@ func firstStatsDMetricIterError(iter statsDMetricIter, iterErr error) error {
 	if iterErr != nil {
 		return iterErr
 	}
-	for i := 0; i < iter.len(); i++ {
-		_, err := iter.metric(i)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := iter.All()
+	return err
 }
