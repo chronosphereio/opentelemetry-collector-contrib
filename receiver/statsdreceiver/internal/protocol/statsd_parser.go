@@ -289,7 +289,7 @@ func (p *StatsDParser) observerCategoryFor(t MetricType) ObserverCategory {
 
 // Aggregate for each metric line.
 func (p *StatsDParser) Aggregate(line string, addr net.Addr) error {
-	parsedMetric, err := parseMessageToMetric(line, p.enableMetricType, p.enableSimpleTags)
+	iter, err := parseMessageToMetrics(line, p.enableMetricType, p.enableSimpleTags)
 	if err != nil {
 		return err
 	}
@@ -305,6 +305,12 @@ func (p *StatsDParser) Aggregate(line string, addr net.Addr) error {
 		p.instrumentsByAddress[addrKey] = instrument
 	}
 
+	return iter.ForEachValue(func(m statsDMetric) {
+		p.aggregateMetric(instrument, m)
+	})
+}
+
+func (p *StatsDParser) aggregateMetric(instrument *instruments, parsedMetric statsDMetric) {
 	switch parsedMetric.description.metricType {
 	case GaugeType:
 		_, ok := instrument.gauges[parsedMetric.description]
@@ -370,12 +376,87 @@ func (p *StatsDParser) Aggregate(line string, addr net.Addr) error {
 			// No action.
 		}
 	}
+}
+
+// statsDMetricIter allows alloc-free iteration over statsDMetric values.
+// This is helpful to support multiple values in a single statsd metric
+// such as timers, etc.
+type statsDMetricIter struct {
+	statsDMetricProperties
+
+	// valueStr contains potentially many values separated by ":".
+	valueStr string
+}
+
+type statsDMetricProperties struct {
+	description statsDMetricDescription
+	unit        string
+	sampleRate  float64
+	timestamp   uint64
+}
+
+func (i *statsDMetricIter) All() ([]statsDMetric, error) {
+	res := make([]statsDMetric, 0, strings.Count(i.valueStr, ":")+1)
+	if err := i.ForEachValue(func(m statsDMetric) {
+		res = append(res, m)
+	}); err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+func (i *statsDMetricIter) ForEachValue(f func(m statsDMetric)) error {
+	var (
+		found bool
+		curr  string
+		n     int
+		rest  = i.valueStr
+	)
+	for {
+		// Cut is alloc free.
+		curr, rest, found = strings.Cut(rest, ":")
+		if len(curr) == 0 {
+			return fmt.Errorf(
+				"empty value for value in values string: n=%d, values=%s", n, i.valueStr)
+		}
+
+		var addition bool
+		if curr[0] == '-' || curr[0] == '+' {
+			addition = true
+		}
+
+		value, err := strconv.ParseFloat(curr, 64)
+		if err != nil {
+			return fmt.Errorf(
+				"parse metric value string: n=%d, values=%s, curr=%s", n, i.valueStr, curr)
+		}
+
+		f(statsDMetric{
+			description: i.description,
+			asFloat:     value,
+			addition:    addition,
+			unit:        i.unit,
+			sampleRate:  i.sampleRate,
+			timestamp:   i.timestamp,
+		})
+		n++
+
+		if !found {
+			// Processed last separator, no more values remaining.
+			break
+		}
+	}
 
 	return nil
 }
 
-func parseMessageToMetric(line string, enableMetricType bool, enableSimpleTags bool) (statsDMetric, error) {
-	result := statsDMetric{}
+func parseMessageToMetrics(
+	line string,
+	enableMetricType bool,
+	enableSimpleTags bool,
+) (statsDMetricIter, error) {
+	result := statsDMetricIter{}
 
 	nameValue, rest, foundName := strings.Cut(line, "|")
 	if !foundName {
@@ -394,9 +475,7 @@ func parseMessageToMetric(line string, enableMetricType bool, enableSimpleTags b
 	if valueStr == "" {
 		return result, errEmptyMetricValue
 	}
-	if strings.HasPrefix(valueStr, "-") || strings.HasPrefix(valueStr, "+") {
-		result.addition = true
-	}
+	result.valueStr = valueStr
 
 	metricType, additionalParts, _ := strings.Cut(rest, "|")
 	inType := MetricType(metricType)
@@ -472,11 +551,6 @@ func parseMessageToMetric(line string, enableMetricType bool, enableSimpleTags b
 		default:
 			return result, fmt.Errorf("unrecognized message part: %s", part)
 		}
-	}
-	var err error
-	result.asFloat, err = strconv.ParseFloat(valueStr, 64)
-	if err != nil {
-		return result, fmt.Errorf("parse metric value string: %s", valueStr)
 	}
 
 	// add metric_type dimension for all metrics

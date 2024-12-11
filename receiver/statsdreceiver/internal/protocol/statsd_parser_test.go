@@ -5,7 +5,9 @@ package protocol
 
 import (
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,7 +94,7 @@ func Test_ParseMessageToMetric(t *testing.T) {
 		{
 			name:  "invalid  counter metric value",
 			input: "test.metric:42.abc|c",
-			err:   errors.New("parse metric value string: 42.abc"),
+			err:   errors.New("parse metric value string: n=0, values=42.abc, curr=42.abc"),
 		},
 		{
 			name:  "unhandled metric type",
@@ -190,7 +192,7 @@ func Test_ParseMessageToMetric(t *testing.T) {
 		{
 			name:  "invalid gauge metric value",
 			input: "test.metric:42.abc|g",
-			err:   errors.New("parse metric value string: 42.abc"),
+			err:   errors.New("parse metric value string: n=0, values=42.abc, curr=42.abc"),
 		},
 		{
 			name:  "gauge metric with sample rate and tag",
@@ -273,7 +275,7 @@ func Test_ParseMessageToMetric(t *testing.T) {
 		{
 			name:  "invalid histogram metric value",
 			input: "test.metric:42.abc|h",
-			err:   errors.New("parse metric value string: 42.abc"),
+			err:   errors.New("parse metric value string: n=0, values=42.abc, curr=42.abc"),
 		},
 		{
 			name:  "invalid histogram with timestamp",
@@ -302,13 +304,17 @@ func Test_ParseMessageToMetric(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMessageToMetric(tt.input, false, false)
+			got, err := parseMessageToMetrics(tt.input, false, false)
 
 			if tt.err != nil {
+				err = firstStatsDMetricIterError(got, err)
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetric, got)
+				res, err := got.All()
+				require.NoError(t, err)
+				require.Len(t, res, 1)
+				assert.Equal(t, tt.wantMetric, res[0])
 			}
 		})
 	}
@@ -405,7 +411,7 @@ func Test_ParseMessageToMetricWithMetricType(t *testing.T) {
 		{
 			name:  "invalid gauge metric value",
 			input: "test.metric:42.abc|g",
-			err:   errors.New("parse metric value string: 42.abc"),
+			err:   errors.New("parse metric value string: n=0, values=42.abc, curr=42.abc"),
 		},
 		{
 			name:  "gauge metric with sample rate and tag",
@@ -530,13 +536,17 @@ func Test_ParseMessageToMetricWithMetricType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMessageToMetric(tt.input, true, false)
+			got, err := parseMessageToMetrics(tt.input, true, false)
 
 			if tt.err != nil {
+				err = firstStatsDMetricIterError(got, err)
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetric, got)
+				res, err := got.All()
+				require.NoError(t, err)
+				require.Len(t, res, 1)
+				assert.Equal(t, tt.wantMetric, res[0])
 			}
 		})
 	}
@@ -595,13 +605,16 @@ func Test_ParseMessageToMetricWithSimpleTags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMessageToMetric(tt.input, false, true)
+			got, err := parseMessageToMetrics(tt.input, false, true)
 
 			if tt.err != nil {
 				assert.Equal(t, tt.err, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.wantMetric, got)
+				res, err := got.All()
+				require.NoError(t, err)
+				require.Len(t, res, 1)
+				assert.Equal(t, tt.wantMetric, res[0])
 			}
 		})
 	}
@@ -642,6 +655,19 @@ func testStatsDMetric(
 		sampleRate: sampleRate,
 		timestamp:  timestamp,
 	}
+}
+
+func testStatsDMetrics(
+	name string, values []float64,
+	addition bool, metricType MetricType,
+	sampleRate float64, labelKeys []string,
+	labelValue []string, timestamp uint64,
+) []statsDMetric {
+	metrics := make([]statsDMetric, len(values))
+	for i, v := range values {
+		metrics[i] = testStatsDMetric(name, v, false, metricType, sampleRate, labelKeys, labelValue, timestamp)
+	}
+	return metrics
 }
 
 func testDescription(name string, metricType MetricType, keys []string, values []string) statsDMetricDescription {
@@ -1946,6 +1972,8 @@ func TestStatsDParser_IPOnlyAggregation(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, p.Aggregate("test.metric:1|c", testAddr01))
 	require.NoError(t, p.Aggregate("test.metric:3|c", testAddr02))
+	require.NoError(t, p.Aggregate("test.multivalue.metric:1|c", testAddr01))
+	require.NoError(t, p.Aggregate("test.multivalue.metric:20:20:1|c", testAddr02))
 	require.Len(t, p.instrumentsByAddress, 1)
 
 	for k := range p.instrumentsByAddress {
@@ -1955,10 +1983,160 @@ func TestStatsDParser_IPOnlyAggregation(t *testing.T) {
 	metrics := p.GetMetrics()
 	require.Len(t, metrics, 1)
 
-	value := metrics[0].Metrics.
+	sm := metrics[0].Metrics.
 		ResourceMetrics().At(0).
-		ScopeMetrics().At(0).
-		Metrics().At(0).Sum().DataPoints().At(0).IntValue()
+		ScopeMetrics()
+	require.Equal(t, 2, sm.Len())
 
+	sm.Sort(func(a, b pmetric.ScopeMetrics) bool {
+		return a.Metrics().At(0).Name() < b.Metrics().At(0).Name()
+	})
+
+	value := sm.At(0).Metrics().At(0).Sum().DataPoints().At(0).IntValue()
 	assert.Equal(t, int64(4), value)
+
+	value = sm.At(1).Metrics().At(0).Sum().DataPoints().At(0).IntValue()
+	assert.Equal(t, int64(42), value)
+}
+
+func Test_ParseMessageWithMultipleValuesToMetric(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantMetrics []statsDMetric
+		wantErr     string
+	}{
+		{
+			name:  "multiple int values",
+			input: "test.metric:42:41:43|c|#key:value",
+			wantMetrics: testStatsDMetrics(
+				"test.metric",
+				[]float64{42, 41, 43},
+				false,
+				"c",
+				0.0,
+				[]string{"key"},
+				[]string{"value"},
+				0,
+			),
+		},
+		{
+			name:  "multiple float values",
+			input: "test.metric:42.1:41.2:43.3|c|#key:value",
+			wantMetrics: testStatsDMetrics(
+				"test.metric",
+				[]float64{42.1, 41.2, 43.3},
+				false,
+				"c",
+				0.0,
+				[]string{"key"},
+				[]string{"value"},
+				0,
+			),
+		},
+		{
+			name:  "mixed float and ints",
+			input: "test.metric:42.0:41:43.123|c|#key:value",
+			wantMetrics: testStatsDMetrics(
+				"test.metric",
+				[]float64{42.0, 41, 43.123},
+				false,
+				"c",
+				0.0,
+				[]string{"key"},
+				[]string{"value"},
+				0,
+			),
+		},
+		{
+			name:  "value contains zero",
+			input: "test.metric:42:0:3|c|#key:value",
+			wantMetrics: testStatsDMetrics(
+				"test.metric",
+				[]float64{42, 0, 3},
+				false,
+				"c",
+				0.0,
+				[]string{"key"},
+				[]string{"value"},
+				0,
+			),
+		},
+		{
+			name:    "invalid value",
+			input:   "test.metric:42:41.hello|c|#key:value",
+			wantErr: "parse metric value string",
+		},
+		{
+			name:    "trailing colon",
+			input:   "test.metric:42:41:|c|#key:value",
+			wantErr: "empty value for value in values string",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseMessageToMetrics(tt.input, false, false)
+
+			if tt.wantErr != "" {
+				err = firstStatsDMetricIterError(got, err)
+				assert.ErrorContainsf(t, err, tt.wantErr, "")
+			} else {
+				assert.NoError(t, err)
+				metrics, err := got.All()
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantMetrics, metrics)
+			}
+		})
+	}
+}
+
+func BenchmarkStatsDParser(b *testing.B) {
+	b.Run("value per message", func(b *testing.B) {
+		benchmarkStatsDParser(b, []string{
+			"test.metric.foo:1|c",
+			"test.metric.bar:2|c",
+			"test.metric.baz:3|c",
+			"test.metric.boo:4|c",
+		})
+	})
+
+	b.Run("multiple values per message", func(b *testing.B) {
+		benchmarkStatsDParser(b, []string{
+			"test.metric.foo:1:1:1|c",
+			"test.metric.bar:1:2:3:4:5:6|c",
+			"test.metric.baz:1:1222:2332:222:222:222:222:11:11:1312.11:231312:12312:221:42:11:1234:256:1024:1:11:1222:2332:222:1:1222:2332:222:1:1222:2332:222:1:1222:2332:222|c",
+		})
+	})
+
+	b.Run("large multiple value message", func(b *testing.B) {
+		benchmarkStatsDParser(b, []string{
+			fmt.Sprintf("test.metric.foo%s|c", strings.Repeat(":1", 100)),
+			fmt.Sprintf("test.metric.bar%s|c", strings.Repeat(":2", 100)),
+			fmt.Sprintf("test.metric.baz%s|c", strings.Repeat(":3", 100)),
+		})
+	})
+}
+
+func benchmarkStatsDParser(b *testing.B, lines []string) {
+	p := &StatsDParser{}
+	require.NoError(b, p.Initialize(false, false, false, false, []TimerHistogramMapping{{StatsdType: "timer", ObserverType: "summary"}, {StatsdType: "histogram", ObserverType: "summary", Summary: SummaryConfig{Percentiles: []float64{0, 95, 99}}}}))
+	addr, _ := net.ResolveUDPAddr("udp", "1.2.3.4:5678")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, line := range lines {
+			if err := p.Aggregate(line, addr); err != nil {
+				b.Fatalf("unexpected error: %v", err)
+			}
+		}
+	}
+}
+
+func firstStatsDMetricIterError(iter statsDMetricIter, iterErr error) error {
+	if iterErr != nil {
+		return iterErr
+	}
+	_, err := iter.All()
+	return err
 }
