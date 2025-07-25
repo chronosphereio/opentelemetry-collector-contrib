@@ -45,7 +45,11 @@ var (
 		model.MetricNameLabel, model.InstanceLabel, model.SchemeLabel,
 		model.MetricsPathLabel, model.JobLabel, prometheus.ScopeNameLabelKey, prometheus.ScopeVersionLabelKey, prometheus.ScopeSchemaURLLabelKey,
 	})
-	notUsefulLabelsHistogram = sortString(append(notUsefulLabelsOther, model.BucketLabel))
+	// Note: Including vmHistogramRangeLabel here means that if a prom classic histogram happens to have
+	// a "vmrange" label, it may not be properly grouped. Unfortunately, at the point where we use this list
+	// to compute getSeriesRef(), we don't know yet whether the metric is a prom classic histogram or a VM histogram
+	// so we have to take that risk.
+	notUsefulLabelsHistogram = sortString(append(notUsefulLabelsOther, model.BucketLabel, vmHistogramRangeLabel))
 	notUsefulLabelsSummary   = sortString(append(notUsefulLabelsOther, model.QuantileLabel))
 )
 

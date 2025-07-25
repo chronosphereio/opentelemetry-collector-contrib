@@ -101,6 +101,12 @@ var mc = testMetadataStore{
 		Help:         "This is some help for an unknown metric",
 		Unit:         "?",
 	},
+	"vm_rows_read_per_query": scrape.MetricMetadata{
+		MetricFamily: "vm_rows_read_per_query",
+		Type:         model.MetricTypeHistogram,
+		Help:         "This is some help for a VictoriaMetrics histogram",
+		Unit:         "?",
+	},
 }
 
 func TestMetricGroupData_toDistributionUnitTest(t *testing.T) {
@@ -895,6 +901,99 @@ func TestMetricGroupData_toNumberDataUnitTest(t *testing.T) {
 			ndpL := metric.Sum().DataPoints()
 			require.Equal(t, 1, ndpL.Len(), "Exactly one point expected")
 			got := ndpL.At(0)
+			want := tt.want()
+			require.Equal(t, want, got, "Expected the points to be equal")
+		})
+	}
+}
+
+func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
+	type scrape struct {
+		at         int64
+		value      float64
+		metric     string
+		extraLabel labels.Label
+	}
+	tests := []struct {
+		name                string
+		metricName          string
+		labels              labels.Labels
+		scrapes             []*scrape
+		want                func() pmetric.ExponentialHistogramDataPoint
+		wantErr             bool
+		intervalStartTimeMs int64
+	}{
+		{
+			name:                "VictoriaMetrics Histogram",
+			metricName:          "vm_rows_read_per_query",
+			intervalStartTimeMs: 11,
+			labels:              labels.FromMap(map[string]string{"a": "A", "b": "B"}),
+			// This is the example from the VictoriaMetrics docs:
+			//   https://docs.victoriametrics.com/victoriametrics/keyconcepts/#histogram
+			scrapes: []*scrape{
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "4.084e+02...4.642e+02"}, value: 2},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "5.275e+02...5.995e+02"}, value: 1},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "8.799e+02...1.000e+03"}, value: 1},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 3},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 4},
+				{at: 11, metric: "vm_rows_read_per_query_sum", value: 15582},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 11},
+			},
+			want: func() pmetric.ExponentialHistogramDataPoint {
+				point := pmetric.NewExponentialHistogramDataPoint()
+				point.SetCount(11)
+				point.SetSum(15582)
+				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond))      // the time in milliseconds -> nanoseconds.
+				point.SetStartTimestamp(pcommon.Timestamp(11 * time.Millisecond)) // the time in milliseconds -> nanoseconds.
+				point.SetScale(2)
+				point.Positive().SetOffset(34)
+				point.Positive().BucketCounts().FromRaw([]uint64{2, 0, 1, 0, 0, 1, 0, 0, 3, 4})
+				attributes := point.Attributes()
+				attributes.PutStr("a", "A")
+				attributes.PutStr("b", "B")
+				return point
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mp := newMetricFamily(tt.metricName, mc, zap.NewNop())
+			for i, tv := range tt.scrapes {
+				var lbls labels.Labels
+				if tv.extraLabel.Name != "" {
+					lbls = labels.NewBuilder(tt.labels).Set(tv.extraLabel.Name, tv.extraLabel.Value).Labels()
+				} else {
+					lbls = tt.labels.Copy()
+				}
+				sRef, _ := getSeriesRef(nil, lbls, mp.mtype)
+				err := mp.addSeries(sRef, tv.metric, lbls, tv.at, tv.value)
+				if tt.wantErr {
+					if i != 0 {
+						require.Error(t, err)
+					}
+				} else {
+					require.NoError(t, err)
+				}
+			}
+			if tt.wantErr {
+				// Don't check the result if we got an error
+				return
+			}
+
+			require.Len(t, mp.groups, 1)
+
+			sl := pmetric.NewMetricSlice()
+			mp.appendMetric(sl, false)
+
+			require.Equal(t, 1, sl.Len(), "Exactly one metric expected")
+			metric := sl.At(0)
+			require.Equal(t, mc[tt.metricName].Help, metric.Description(), "Expected help metadata in metric description")
+			require.Equal(t, mc[tt.metricName].Unit, metric.Unit(), "Expected unit metadata in metric")
+
+			hdpL := metric.ExponentialHistogram().DataPoints()
+			require.Equal(t, 1, hdpL.Len(), "Exactly one point expected")
+			got := hdpL.At(0)
 			want := tt.want()
 			require.Equal(t, want, got, "Expected the points to be equal")
 		})
