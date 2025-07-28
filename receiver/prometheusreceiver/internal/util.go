@@ -39,7 +39,11 @@ var (
 	errTransactionAborted = errors.New("transaction aborted")
 	errNoJobInstance      = errors.New("job or instance cannot be found from labels")
 
-	notUsefulLabelsHistogram = sortString([]string{model.MetricNameLabel, model.InstanceLabel, model.SchemeLabel, model.MetricsPathLabel, model.JobLabel, model.BucketLabel})
+	// Note: Including vmHistogramRangeLabel here means that if a prom classic histogram happens to have
+	// a "vmrange" label, it may not be properly grouped. Unfortunately, at the point where we use this list
+	// to compute getSeriesRef(), we don't know yet whether the metric is a prom classic histogram or a VM histogram
+	// so we have to take that risk.
+	notUsefulLabelsHistogram = sortString([]string{model.MetricNameLabel, model.InstanceLabel, model.SchemeLabel, model.MetricsPathLabel, model.JobLabel, model.BucketLabel, vmHistogramRangeLabel})
 	notUsefulLabelsSummary   = sortString([]string{model.MetricNameLabel, model.InstanceLabel, model.SchemeLabel, model.MetricsPathLabel, model.JobLabel, model.QuantileLabel})
 	notUsefulLabelsOther     = sortString([]string{model.MetricNameLabel, model.InstanceLabel, model.SchemeLabel, model.MetricsPathLabel, model.JobLabel})
 )
