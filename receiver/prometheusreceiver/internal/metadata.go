@@ -11,6 +11,10 @@ import (
 type dataPoint struct {
 	value    float64
 	boundary float64
+
+	// prevBoundary is only used for VictoriaMetrics histograms. Since they can be sparse,
+	// we can't rely on the previous boundary being included in the list.
+	prevBoundary float64
 }
 
 // internalMetricMetadata allows looking up metadata for internal scrape metrics

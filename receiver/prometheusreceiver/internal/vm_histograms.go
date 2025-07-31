@@ -82,3 +82,25 @@ func vmConvertBuckets(dest pmetric.ExponentialHistogramDataPoint, source []*data
 		dest.Positive().BucketCounts().SetAt(position, dest.Positive().BucketCounts().At(position)+uint64(dp.value))
 	}
 }
+
+// vmEstimateSum estimates the sum from VM bucket counts in the same way as the
+// avgForLeTimeseries() function which is used by VM's implementation of histogram_avg().
+//
+// See: https://github.com/VictoriaMetrics/VictoriaMetrics/blob/b98e5927525ceb3238870701ea9c7dcf6296681d/app/vmselect/promql/transform.go#L796
+//
+// Note that this implementation is simpler than the VM version because:
+//  1. We are only computing the sum, not the average, so we don't need to guard against division by zero.
+//  2. The 'source' buckets are still in sparse form, so we can't use the previous iteration's boundary as the start of the bucket.
+//  3. The 'source' buckets are still in non-cumulative form, so we don't need to subtract the previous bucket value.
+func vmEstimateSum(source []*dataPoint) float64 {
+	sum := float64(0)
+
+	for _, dp := range source {
+		if math.IsInf(dp.boundary, 0) || math.IsInf(dp.prevBoundary, 0) {
+			continue
+		}
+		n := (dp.boundary + dp.prevBoundary) / 2
+		sum += n * dp.value
+	}
+	return sum
+}
