@@ -259,7 +259,18 @@ func (mg *metricGroup) vmToExponentialHistogramDataPoints(dest pmetric.Exponenti
 		point.SetScale(mg.vmHistScale)
 		point.SetCount(uint64(mg.count))
 		if mg.hasSum {
+			// Prefer the explicit _sum series reported by the target, if available.
 			point.SetSum(mg.sum)
+		} else {
+			// Otherwise estimate the sum from the buckets in the same way that VM does.
+			//
+			// This allows the PromQL histogram_avg() function to work when a VM histogram is missing
+			// the _sum series, which matches the VM behavior since MetricsQL's histogram_avg() does
+			// not depend on the _sum series.
+			//
+			// The result will not be as accurate as if the target had reported a true _sum series,
+			// but it should give the same approximate value as VM.
+			point.SetSum(vmEstimateSum(mg.complexValue))
 		}
 		vmConvertBuckets(point, mg.complexValue)
 	}
@@ -445,7 +456,9 @@ func (mf *metricFamily) addSeries(seriesRef uint64, metricName string, ls labels
 		case metricName == mf.metadata.MetricFamily+metricSuffixCreated:
 			mg.createdSeconds = v
 		default:
-			boundary, err := getBoundary(mf.mtype, ls)
+			dp := &dataPoint{value: v}
+			var err error
+			dp.boundary, err = getBoundary(mf.mtype, ls)
 			if err == errEmptyLeLabel {
 				// Check if this is a VictoriaMetrics histogram.
 				// We only check this if the "le" label was missing so we don't pay for the VM checks in the classic prom cases.
@@ -466,11 +479,12 @@ func (mf *metricFamily) addSeries(seriesRef uint64, metricName string, ls labels
 					mg.vmHistScale = vmHistogramGetScale(start, end)
 				}
 				mf.isVMHist = true
-				boundary = end
+				dp.boundary = end
+				dp.prevBoundary = start
 			} else if err != nil {
 				return err
 			}
-			mg.complexValue = append(mg.complexValue, &dataPoint{value: v, boundary: boundary})
+			mg.complexValue = append(mg.complexValue, dp)
 		}
 	case pmetric.MetricTypeExponentialHistogram:
 		if metricName == mf.metadata.MetricFamily+metricSuffixCreated {
