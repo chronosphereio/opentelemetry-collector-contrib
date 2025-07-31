@@ -190,3 +190,57 @@ func TestVMConvertBuckets(t *testing.T) {
 		})
 	}
 }
+
+func TestVMEstimateSum(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   []*dataPoint
+		expected float64
+	}{
+		{
+			name: "basic",
+			source: []*dataPoint{
+				{prevBoundary: 0, boundary: 1, value: 5},
+				{prevBoundary: 1, boundary: 2, value: 10},
+				{prevBoundary: 2, boundary: 4, value: 15},
+			},
+			expected: 62.5, // 0.5*5 + 1.5*10 + 3*15
+		},
+		{
+			name: "with zero bucket",
+			source: []*dataPoint{
+				{prevBoundary: 0, boundary: 0, value: 5},
+				{prevBoundary: 0, boundary: 1, value: 10},
+				{prevBoundary: 1, boundary: 2, value: 15},
+			},
+			expected: 27.5, // 0*5 + 0.5*10 + 1.5*15
+		},
+		{
+			name: "with infinity bucket",
+			source: []*dataPoint{
+				{prevBoundary: 0, boundary: 1, value: 5},
+				{prevBoundary: 1, boundary: 2, value: 10},
+				{prevBoundary: 2, boundary: 4, value: 15},
+				{prevBoundary: 4, boundary: math.Inf(1), value: 20},
+			},
+			expected: 62.5, // 0.5*5 + 1.5*10 + 3*15
+		},
+		{
+			name: "sparse buckets",
+			source: []*dataPoint{
+				{prevBoundary: 1, boundary: 2, value: 5},
+				{prevBoundary: 4, boundary: 8, value: 10},
+			},
+			expected: 67.5, // 1.5*5 + 6*10
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := vmEstimateSum(tt.source)
+			if got != tt.expected {
+				t.Errorf("vmEstimateSum() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
