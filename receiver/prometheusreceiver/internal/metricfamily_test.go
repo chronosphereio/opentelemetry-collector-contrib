@@ -983,6 +983,39 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 				return point
 			},
 		},
+		{
+			name:                "VictoriaMetrics Histogram with inconsistent count",
+			metricName:          "vm_rows_read_per_query",
+			intervalStartTimeMs: 11,
+			labels:              labels.FromMap(map[string]string{"a": "A", "b": "B"}),
+			// This is the example from the VictoriaMetrics docs:
+			//   https://docs.victoriametrics.com/victoriametrics/keyconcepts/#histogram
+			scrapes: []*scrape{
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "4.084e+02...4.642e+02"}, value: 2},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "5.275e+02...5.995e+02"}, value: 1},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "8.799e+02...1.000e+03"}, value: 1},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 3},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 4},
+				{at: 11, metric: "vm_rows_read_per_query_sum", value: 15582},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 123}, // This doesn't match the buckets.
+			},
+			want: func() pmetric.ExponentialHistogramDataPoint {
+				point := pmetric.NewExponentialHistogramDataPoint()
+				point.SetCount(11) // This gets fixed during conversion to OTLP.
+				point.SetSum(15582)
+				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond))      // the time in milliseconds -> nanoseconds.
+				point.SetStartTimestamp(pcommon.Timestamp(11 * time.Millisecond)) // the time in milliseconds -> nanoseconds.
+				point.SetScale(2)
+				point.Positive().SetOffset(34)
+				point.Positive().BucketCounts().FromRaw([]uint64{2, 0, 1, 0, 0, 1, 0, 0, 3, 4})
+				attributes := point.Attributes()
+				// Since the count was fixed, we expect an attribute that indicates the correction.
+				attributes.PutStr("vmhist_invalid_original_count", "true")
+				attributes.PutStr("a", "A")
+				attributes.PutStr("b", "B")
+				return point
+			},
+		},
 	}
 
 	for _, tt := range tests {
