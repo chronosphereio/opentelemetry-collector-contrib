@@ -45,7 +45,11 @@ type metricGroup struct {
 	count    float64
 	hasCount bool
 	sum      float64
-	hasSum   bool
+	// sums holds the list of all sum values we've seen, whereas 'sum' is the
+	// last one we saw (or 0 if we haven't seen any).
+	// This is only used for VM histograms.
+	sums   []float64
+	hasSum bool
 	// This corresponds to the `_created` sample found from the metric parsing.
 	// - https://github.com/prometheus/OpenMetrics/blob/main/specification/OpenMetrics.md#timestamps
 	// - https://github.com/prometheus/OpenMetrics/blob/main/specification/OpenMetrics.md#counter-1
@@ -257,10 +261,14 @@ func (mg *metricGroup) vmToExponentialHistogramDataPoints(dest pmetric.Exponenti
 		point.SetFlags(pmetric.DefaultDataPointFlags.WithNoRecordedValue(true))
 	} else {
 		point.SetScale(mg.vmHistScale)
-		point.SetCount(uint64(mg.count))
 		if mg.hasSum {
 			// Prefer the explicit _sum series reported by the target, if available.
-			point.SetSum(mg.sum)
+			// There might have been multiple _sum series so we add them up.
+			var sum float64
+			for _, s := range mg.sums {
+				sum += s
+			}
+			point.SetSum(sum)
 		} else {
 			// Otherwise estimate the sum from the buckets in the same way that VM does.
 			//
@@ -273,6 +281,19 @@ func (mg *metricGroup) vmToExponentialHistogramDataPoints(dest pmetric.Exponenti
 			point.SetSum(vmEstimateSum(mg.complexValue))
 		}
 		vmConvertBuckets(point, mg.complexValue)
+
+		// Set the count to the sum of all bucket counts.
+		// We can't trust the _count series because we might have merged buckets from multiple
+		// VM histograms but we only capture one of the _count values. The _count series is
+		// redundant anyway since it should always be equal to the sum of the bucket counts.
+		bucketTotal := point.ZeroCount()
+		for i := 0; i < point.Positive().BucketCounts().Len(); i++ {
+			bucketTotal += point.Positive().BucketCounts().At(i)
+		}
+		for i := 0; i < point.Negative().BucketCounts().Len(); i++ {
+			bucketTotal += point.Negative().BucketCounts().At(i)
+		}
+		point.SetCount(bucketTotal)
 	}
 
 	// The timestamp MUST be in retrieved from milliseconds and converted to nanoseconds.
@@ -446,6 +467,7 @@ func (mf *metricFamily) addSeries(seriesRef uint64, metricName string, ls labels
 	case pmetric.MetricTypeHistogram, pmetric.MetricTypeSummary:
 		switch {
 		case strings.HasSuffix(metricName, metricsSuffixSum):
+			mg.sums = append(mg.sums, v)
 			mg.sum = v
 			mg.hasSum = true
 		case strings.HasSuffix(metricName, metricsSuffixCount):
