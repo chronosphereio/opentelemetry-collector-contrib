@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/prometheus/prometheus/model/exemplar"
@@ -273,6 +274,23 @@ func (mg *metricGroup) vmToExponentialHistogramDataPoints(dest pmetric.Exponenti
 			point.SetSum(vmEstimateSum(mg.complexValue))
 		}
 		vmConvertBuckets(point, mg.complexValue)
+
+		// Enforce that the count field must equal the sum of all bucket counts.
+		// This is a temporary workaround to try to prevent bad histogram data from causing a whole
+		// batch of metrics to be rejected by the backend.
+		bucketTotal := point.ZeroCount()
+		for i := 0; i < point.Positive().BucketCounts().Len(); i++ {
+			bucketTotal += point.Positive().BucketCounts().At(i)
+		}
+		for i := 0; i < point.Negative().BucketCounts().Len(); i++ {
+			bucketTotal += point.Negative().BucketCounts().At(i)
+		}
+		if point.Count() != bucketTotal {
+			// For now as part of debugging, we will force the count to pass the server-side validation.
+			// We'll add a special attribute so we can see which datapoints were affected.
+			point.Attributes().PutStr("vmhist_invalid_original_count", strconv.FormatUint(point.Count(), 10))
+			point.SetCount(bucketTotal)
+		}
 	}
 
 	// The timestamp MUST be in retrieved from milliseconds and converted to nanoseconds.
