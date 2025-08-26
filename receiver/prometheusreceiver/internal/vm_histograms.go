@@ -79,6 +79,9 @@ func vmConvertBuckets(dest pmetric.ExponentialHistogramDataPoint, source []*data
 
 		// Add to the existing value in case inexact (non-base-2) boundaries cause
 		// us to merge multiple source buckets into one destination bucket.
+		// This also happens to aggregate buckets from multiple VM histograms in a single scrape
+		// that have the same metric name and label set. The instrumentation library isn't supposed
+		// to do that, but if they do then aggregating seems like a graceful way to handle it.
 		dest.Positive().BucketCounts().SetAt(position, dest.Positive().BucketCounts().At(position)+uint64(dp.value))
 	}
 }
