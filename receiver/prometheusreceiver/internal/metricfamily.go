@@ -467,7 +467,11 @@ func (mf *metricFamily) addSeries(seriesRef uint64, metricName string, ls labels
 	case pmetric.MetricTypeHistogram, pmetric.MetricTypeSummary:
 		switch {
 		case strings.HasSuffix(metricName, metricsSuffixSum):
-			mg.sums = append(mg.sums, v)
+			// We really only need to populate "sums" for VM histograms, but we can't tell the difference
+			// until we see a bucket series, so we populate it for all histograms just in case.
+			if mf.mtype == pmetric.MetricTypeHistogram {
+				mg.sums = append(mg.sums, v)
+			}
 			mg.sum = v
 			mg.hasSum = true
 		case strings.HasSuffix(metricName, metricsSuffixCount):
