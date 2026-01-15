@@ -1080,6 +1080,38 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 			},
 		},
 		{
+			name:                "VictoriaMetrics Histogram With Created",
+			metricName:          "vm_rows_read_per_query",
+			intervalStartTimeMs: 11,
+			labels:              labels.FromMap(map[string]string{"a": "A", "b": "B"}),
+			// This is the example from the VictoriaMetrics docs:
+			//   https://docs.victoriametrics.com/victoriametrics/keyconcepts/#histogram
+			scrapes: []*scrape{
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "4.084e+02...4.642e+02"}, value: 2},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "5.275e+02...5.995e+02"}, value: 1},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "8.799e+02...1.000e+03"}, value: 1},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 3},
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 4},
+				{at: 11, metric: "vm_rows_read_per_query_sum", value: 15582},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 11},
+				{at: 11, metric: "vm_rows_read_per_query_created", value: 10.0 / 1000.0}, // 10 milliseconds, _created value is in seconds
+			},
+			want: func() pmetric.ExponentialHistogramDataPoint {
+				point := pmetric.NewExponentialHistogramDataPoint()
+				point.SetCount(11)
+				point.SetSum(15582)
+				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond)) // the time in milliseconds -> nanoseconds.
+				point.SetStartTimestamp(pcommon.Timestamp(10 * time.Millisecond))
+				point.SetScale(2)
+				point.Positive().SetOffset(34)
+				point.Positive().BucketCounts().FromRaw([]uint64{2, 0, 1, 0, 0, 1, 0, 0, 3, 4})
+				attributes := point.Attributes()
+				attributes.PutStr("a", "A")
+				attributes.PutStr("b", "B")
+				return point
+			},
+		},
+		{
 			name:                "VictoriaMetrics Histogram with estimated sum",
 			metricName:          "vm_rows_read_per_query",
 			intervalStartTimeMs: 11,
@@ -1097,8 +1129,7 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 				point.SetCount(11)
 				// sum is estimated due to missing _sum series
 				point.SetSum(15180.05)
-				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond))      // the time in milliseconds -> nanoseconds.
-				point.SetStartTimestamp(pcommon.Timestamp(11 * time.Millisecond)) // the time in milliseconds -> nanoseconds.
+				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond)) // the time in milliseconds -> nanoseconds.
 				point.SetScale(2)
 				point.Positive().SetOffset(34)
 				point.Positive().BucketCounts().FromRaw([]uint64{2, 0, 1, 0, 0, 1, 0, 0, 3, 4})
@@ -1137,8 +1168,7 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 				point := pmetric.NewExponentialHistogramDataPoint()
 				point.SetCount(11 + 80)
 				point.SetSum(1000 + 2000)
-				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond))      // the time in milliseconds -> nanoseconds.
-				point.SetStartTimestamp(pcommon.Timestamp(11 * time.Millisecond)) // the time in milliseconds -> nanoseconds.
+				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond)) // the time in milliseconds -> nanoseconds.
 				point.SetScale(2)
 				point.Positive().SetOffset(34)
 				point.Positive().BucketCounts().FromRaw([]uint64{2, 0, 1, 0, 0, 11, 0, 0, 33, 44})

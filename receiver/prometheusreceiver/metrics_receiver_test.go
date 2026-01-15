@@ -1762,3 +1762,82 @@ scrape_configs:
 	require.Contains(t, gotUA, set.BuildInfo.Command)
 	require.Contains(t, gotUA, set.BuildInfo.Version)
 }
+
+const vmHistoPayload = `
+# TYPE test_vmhisto histogram
+test_vmhisto_bucket{foo="bar",vmrange="0...0.000e+00"} 1
+test_vmhisto_bucket{foo="bar",vmrange="4.084e+02...4.642e+02"} 2
+test_vmhisto_bucket{foo="bar",vmrange="5.275e+02...5.995e+02"} 3
+test_vmhisto_count{foo="bar",vmrange="5.275e+02...5.995e+02"} 123456
+# TYPE test_counter counter
+test_counter_total{foo="bar"} 123.0
+`
+
+const vmHistPayloadDupes = `
+# TYPE test_vmhisto histogram
+test_vmhisto_bucket{foo="bar",vmrange="0...0.000e+00"} 1
+test_vmhisto_bucket{foo="bar",vmrange="4.084e+02...4.642e+02"} 2
+test_vmhisto_bucket{foo="bar",vmrange="5.275e+02...5.995e+02"} 3
+test_vmhisto_count{foo="bar",vmrange="5.275e+02...5.995e+02"} 123456
+# TYPE test_counter counter
+test_counter_total{foo="bar"} 123.0
+# TYPE test_vmhisto histogram
+test_vmhisto_bucket{foo="bar",vmrange="0...0.000e+00"} 100
+test_vmhisto_bucket{foo="bar",vmrange="4.084e+02...4.642e+02"} 200
+test_vmhisto_bucket{foo="bar",vmrange="5.275e+02...5.995e+02"} 300
+test_vmhisto_count{foo="bar",vmrange="5.275e+02...5.995e+02"} 123456
+`
+
+func TestVMHisto(t *testing.T) {
+	getDataFn := func(name string, useOM bool, testPage string, expectedCount int) *testData {
+		return &testData{
+			name: "name",
+			pages: []mockPrometheusResponse{
+				{code: 200, data: testPage, useOpenMetrics: useOM},
+			},
+			validateFunc: func(t *testing.T, td *testData, result []pmetric.ResourceMetrics) {
+				require.Equal(t, 1, len(result))
+				metrics := getMetrics(result[0])
+				for _, m := range metrics {
+					if m.Name() == "test_vmhisto" {
+						histo := m.ExponentialHistogram()
+						require.Equal(t, 1, histo.DataPoints().Len())
+						// _count is not used
+						require.Equal(t, expectedCount, int(histo.DataPoints().At(0).Count()))
+						return
+					}
+				}
+				// vmhisto just outright fails with om-parser
+				if !td.pages[0].useOpenMetrics {
+					t.Fatalf("did not find expected test_vmhisto")
+				}
+			},
+			validateScrapes: true,
+		}
+	}
+
+	for _, useOM := range []bool{false, true} {
+		for _, testCase := range []struct {
+			name          string
+			payload       string
+			expectedCount int
+		}{
+			{
+				"no dupe histo",
+				vmHistoPayload,
+				1 + 2 + 3,
+			},
+			{
+				"with dupe histo",
+				vmHistPayloadDupes,
+				1 + 2 + 3 + 100 + 200 + 300,
+			},
+		} {
+			t.Run(fmt.Sprintf("%s useOM=%v", testCase.name, useOM), func(t *testing.T) {
+				t.Parallel()
+				in := getDataFn(testCase.name, useOM, testCase.payload, testCase.expectedCount)
+				testComponent(t, []*testData{in}, nil)
+			})
+		}
+	}
+}

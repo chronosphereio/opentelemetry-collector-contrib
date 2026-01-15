@@ -16,9 +16,7 @@ const (
 	vmHistogramRangeLabel = "vmrange"
 )
 
-var (
-	errInvalidVMHistogramRange = errors.New("invalid 'vmrange' label value on histogram bucket")
-)
+var errInvalidVMHistogramRange = errors.New("invalid 'vmrange' label value on histogram bucket")
 
 func vmHistogramParseRange(vmrange string) (start, end float64, err error) {
 	before, after, ok := strings.Cut(vmrange, "...")
@@ -55,7 +53,7 @@ func vmConvertBuckets(dest pmetric.ExponentialHistogramDataPoint, source []*data
 	offsetInitialized := false
 	for _, dp := range source {
 		if dp.boundary == 0 {
-			dest.SetZeroCount(uint64(dp.value))
+			dest.SetZeroCount(dest.ZeroCount() + uint64(dp.value))
 			continue
 		}
 
