@@ -1768,7 +1768,7 @@ const vmHistoPayload = `
 test_vmhisto_bucket{foo="bar",vmrange="0...0.000e+00"} 1
 test_vmhisto_bucket{foo="bar",vmrange="4.084e+02...4.642e+02"} 2
 test_vmhisto_bucket{foo="bar",vmrange="5.275e+02...5.995e+02"} 3
-test_vmhisto_count{foo="bar",vmrange="5.275e+02...5.995e+02"} 123456
+test_vmhisto_count{foo="bar"} 123456
 # TYPE test_counter counter
 test_counter_total{foo="bar"} 123.0
 `
@@ -1778,14 +1778,14 @@ const vmHistPayloadDupes = `
 test_vmhisto_bucket{foo="bar",vmrange="0...0.000e+00"} 1
 test_vmhisto_bucket{foo="bar",vmrange="4.084e+02...4.642e+02"} 2
 test_vmhisto_bucket{foo="bar",vmrange="5.275e+02...5.995e+02"} 3
-test_vmhisto_count{foo="bar",vmrange="5.275e+02...5.995e+02"} 123456
+test_vmhisto_count{foo="bar"} 123456
 # TYPE test_counter counter
 test_counter_total{foo="bar"} 123.0
 # TYPE test_vmhisto histogram
 test_vmhisto_bucket{foo="bar",vmrange="0...0.000e+00"} 100
 test_vmhisto_bucket{foo="bar",vmrange="4.084e+02...4.642e+02"} 200
 test_vmhisto_bucket{foo="bar",vmrange="5.275e+02...5.995e+02"} 300
-test_vmhisto_count{foo="bar",vmrange="5.275e+02...5.995e+02"} 123456
+test_vmhisto_count{foo="bar"} 123456
 `
 
 func TestVMHisto(t *testing.T) {
@@ -1816,12 +1816,17 @@ func TestVMHisto(t *testing.T) {
 		}
 	}
 
-	for _, useOM := range []bool{false} {
+	for _, useOM := range []bool{false, true} {
 		for _, testCase := range []struct {
 			name          string
 			payload       string
 			expectedCount int
 		}{
+			{
+				"no dupe histo",
+				vmHistoPayload,
+				1 + 2 + 3,
+			},
 			{
 				"with dupe histo",
 				vmHistPayloadDupes,
