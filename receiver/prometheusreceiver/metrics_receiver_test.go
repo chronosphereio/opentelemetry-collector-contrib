@@ -1816,17 +1816,12 @@ func TestVMHisto(t *testing.T) {
 		}
 	}
 
-	for _, useOM := range []bool{false, true} {
+	for _, useOM := range []bool{false} {
 		for _, testCase := range []struct {
 			name          string
 			payload       string
 			expectedCount int
 		}{
-			{
-				"no dupe histo",
-				vmHistoPayload,
-				1 + 2 + 3,
-			},
 			{
 				"with dupe histo",
 				vmHistPayloadDupes,

@@ -191,6 +191,9 @@ func (t *transaction) Append(_ storage.SeriesRef, ls labels.Labels, atMs int64, 
 		return 0, nil
 	}
 
+	if curMF.isVMHist {
+		return 0, nil
+	}
 	// never return errors, as that fails the whole scrape
 	// return ref==1 indicating that the series was added and needs staleness tracking
 	return 1, nil
