@@ -45,7 +45,7 @@ var (
 		model.MetricNameLabel, model.InstanceLabel, model.SchemeLabel,
 		model.MetricsPathLabel, model.JobLabel, prometheus.ScopeNameLabelKey, prometheus.ScopeVersionLabelKey, prometheus.ScopeSchemaURLLabelKey,
 	})
-	notUsefulLabelsHistogram = sortString(append(notUsefulLabelsOther, model.BucketLabel))
+	notUsefulLabelsHistogram = sortString(append(notUsefulLabelsOther, model.BucketLabel, vmHistogramRangeLabel))
 	notUsefulLabelsSummary   = sortString(append(notUsefulLabelsOther, model.QuantileLabel))
 )
 

@@ -31,6 +31,9 @@ type metricFamily struct {
 	name        string
 	metadata    *scrape.MetricMetadata
 	groupOrders []*metricGroup
+
+	// isVMHist is true if the metric family contains a VictoriaMetrics histogram.
+	isVMHist bool
 }
 
 // metricGroup, represents a single metric of a metric family. for example a histogram metric is usually represent by
@@ -43,7 +46,11 @@ type metricGroup struct {
 	count    float64
 	hasCount bool
 	sum      float64
-	hasSum   bool
+	// sums holds the list of all sum values we've seen, whereas 'sum' is the
+	// last one we saw (or 0 if we haven't seen any).
+	// This is only used for VM histograms.
+	sums   []float64
+	hasSum bool
 	// This corresponds to the `_created` sample found from the metric parsing.
 	// - https://github.com/prometheus/OpenMetrics/blob/main/specification/OpenMetrics.md#timestamps
 	// - https://github.com/prometheus/OpenMetrics/blob/main/specification/OpenMetrics.md#counter-1
@@ -53,6 +60,10 @@ type metricGroup struct {
 	fhValue        *histogram.FloatHistogram
 	complexValue   []*dataPoint
 	exemplars      pmetric.ExemplarSlice
+	// vmHistScale is the scale to use when converting VictoriaMetrics histograms to ExponentialHistograms.
+	// It is only populated when the metric group contains a VM histogram. It is calculated by comparing
+	// the start and end of the first non-zero "vmrange" label.
+	vmHistScale int32
 	isNHCB         bool // true if this is a Native Histogram Custom Buckets (schema -53)
 }
 
@@ -250,6 +261,65 @@ func (mg *metricGroup) toExponentialHistogramDataPoints(dest pmetric.Exponential
 		return
 	}
 
+	tsNanos := timestampFromMs(mg.ts)
+	if mg.createdSeconds != 0 {
+		point.SetStartTimestamp(timestampFromFloat64(mg.createdSeconds))
+	}
+	point.SetTimestamp(tsNanos)
+	populateAttributes(pmetric.MetricTypeHistogram, mg.ls, point.Attributes())
+	mg.setExemplars(point.Exemplars())
+}
+
+func (mg *metricGroup) vmToExponentialHistogramDataPoints(dest pmetric.ExponentialHistogramDataPointSlice) {
+	if !mg.hasCount {
+		return
+	}
+
+	mg.sortPoints()
+
+	point := dest.AppendEmpty()
+	point.SetTimestamp(timestampFromMs(mg.ts))
+
+	if value.IsStaleNaN(mg.sum) || value.IsStaleNaN(mg.count) {
+		point.SetFlags(pmetric.DefaultDataPointFlags.WithNoRecordedValue(true))
+	} else {
+		point.SetScale(mg.vmHistScale)
+		if mg.hasSum {
+			// Prefer the explicit _sum series reported by the target, if available.
+			// There might have been multiple _sum series so we add them up.
+			var sum float64
+			for _, s := range mg.sums {
+				sum += s
+			}
+			point.SetSum(sum)
+		} else {
+			// Otherwise estimate the sum from the buckets in the same way that VM does.
+			//
+			// This allows the PromQL histogram_avg() function to work when a VM histogram is missing
+			// the _sum series, which matches the VM behavior since MetricsQL's histogram_avg() does
+			// not depend on the _sum series.
+			//
+			// The result will not be as accurate as if the target had reported a true _sum series,
+			// but it should give the same approximate value as VM.
+			point.SetSum(vmEstimateSum(mg.complexValue))
+		}
+		vmConvertBuckets(point, mg.complexValue)
+
+		// Set the count to the sum of all bucket counts.
+		// We can't trust the _count series because we might have merged buckets from multiple
+		// VM histograms but we only capture one of the _count values. The _count series is
+		// redundant anyway since it should always be equal to the sum of the bucket counts.
+		bucketTotal := point.ZeroCount()
+		for i := 0; i < point.Positive().BucketCounts().Len(); i++ {
+			bucketTotal += point.Positive().BucketCounts().At(i)
+		}
+		for i := 0; i < point.Negative().BucketCounts().Len(); i++ {
+			bucketTotal += point.Negative().BucketCounts().At(i)
+		}
+		point.SetCount(bucketTotal)
+	}
+
+	// The timestamp MUST be in retrieved from milliseconds and converted to nanoseconds.
 	tsNanos := timestampFromMs(mg.ts)
 	if mg.createdSeconds != 0 {
 		point.SetStartTimestamp(timestampFromFloat64(mg.createdSeconds))
@@ -458,6 +528,11 @@ func (mf *metricFamily) addSeries(seriesRef uint64, metricName string, ls labels
 	case pmetric.MetricTypeHistogram, pmetric.MetricTypeSummary:
 		switch {
 		case strings.HasSuffix(metricName, metricsSuffixSum):
+			// We really only need to populate "sums" for VM histograms, but we can't tell the difference
+			// until we see a bucket series, so we populate it for all histograms just in case.
+			if mf.mtype == pmetric.MetricTypeHistogram {
+				mg.sums = append(mg.sums, v)
+			}
 			mg.sum = v
 			mg.hasSum = true
 		case strings.HasSuffix(metricName, metricsSuffixCount):
@@ -468,11 +543,35 @@ func (mf *metricFamily) addSeries(seriesRef uint64, metricName string, ls labels
 		case metricName == mf.metadata.MetricFamily+metricSuffixCreated:
 			mg.createdSeconds = v
 		default:
-			boundary, err := getBoundary(mf.mtype, ls)
-			if err != nil {
+			dp := &dataPoint{value: v}
+			var err error
+			dp.boundary, err = getBoundary(mf.mtype, ls)
+			if err == errEmptyLeLabel {
+				// Check if this is a VictoriaMetrics histogram.
+				// We only check this if the "le" label was missing so we don't pay for the VM checks in the classic prom cases.
+				vmrange := ls.Get(vmHistogramRangeLabel)
+				if vmrange == "" {
+					// This is not a VM histogram. Return the original error about "le" being missing.
+					return errEmptyLeLabel
+				}
+				start, end, err := vmHistogramParseRange(vmrange)
+				if err != nil {
+					return err
+				}
+				// Use the ratio of end/start to infer the scale factor we should use for the resulting ExponentialHistogram.
+				// Ignore the "zero" bucket since we can't infer the scale from it.
+				// We assume that the scale is the same for all other (non-zero) buckets.
+				// If for some reason they're different, the best we can do is pick one of them.
+				if start != 0 && end != 0 {
+					mg.vmHistScale = vmHistogramGetScale(start, end)
+				}
+				mf.isVMHist = true
+				dp.boundary = end
+				dp.prevBoundary = start
+			} else if err != nil {
 				return err
 			}
-			mg.complexValue = append(mg.complexValue, &dataPoint{value: v, boundary: boundary})
+			mg.complexValue = append(mg.complexValue, dp)
 		}
 	case pmetric.MetricTypeExponentialHistogram:
 		if metricName == mf.metadata.MetricFamily+metricSuffixCreated {
@@ -577,6 +676,18 @@ func (mf *metricFamily) appendMetric(metrics pmetric.MetricSlice, trimSuffixes b
 
 	switch mf.mtype {
 	case pmetric.MetricTypeHistogram:
+		if mf.isVMHist {
+			// VM histograms map more closely to ExponentialHistograms than to Histograms.
+			histogram := metric.SetEmptyExponentialHistogram()
+			histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+			hdpL := histogram.DataPoints()
+			for _, mg := range mf.groupOrders {
+				mg.vmToExponentialHistogramDataPoints(hdpL)
+			}
+			pointCount = hdpL.Len()
+			break
+		}
+
 		histogram := metric.SetEmptyHistogram()
 		histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
 		hdpL := histogram.DataPoints()
