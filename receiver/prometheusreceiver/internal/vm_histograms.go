@@ -55,7 +55,7 @@ func vmConvertBuckets(dest pmetric.ExponentialHistogramDataPoint, source []*data
 	offsetInitialized := false
 	for _, dp := range source {
 		if dp.boundary == 0 {
-			dest.SetZeroCount(uint64(dp.value))
+			dest.SetZeroCount(dest.ZeroCount() + uint64(dp.value))
 			continue
 		}
 
