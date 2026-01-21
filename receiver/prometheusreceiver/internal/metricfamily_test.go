@@ -931,17 +931,19 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 			// This is the example from the VictoriaMetrics docs:
 			//   https://docs.victoriametrics.com/victoriametrics/keyconcepts/#histogram
 			scrapes: []*scrape{
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "0...0.000e+00"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "4.084e+02...4.642e+02"}, value: 2},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "5.275e+02...5.995e+02"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "8.799e+02...1.000e+03"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 3},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 4},
 				{at: 11, metric: "vm_rows_read_per_query_sum", value: 15582},
-				{at: 11, metric: "vm_rows_read_per_query_count", value: 11},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 12},
 			},
 			want: func() pmetric.ExponentialHistogramDataPoint {
 				point := pmetric.NewExponentialHistogramDataPoint()
-				point.SetCount(11)
+				point.SetCount(12)
+				point.SetZeroCount(1)
 				point.SetSum(15582)
 				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond))      // the time in milliseconds -> nanoseconds.
 				point.SetStartTimestamp(pcommon.Timestamp(11 * time.Millisecond)) // the time in milliseconds -> nanoseconds.
@@ -960,16 +962,18 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 			intervalStartTimeMs: 11,
 			labels:              labels.FromMap(map[string]string{"a": "A", "b": "B"}),
 			scrapes: []*scrape{
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "0...0.000e+00"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "4.084e+02...4.642e+02"}, value: 2},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "5.275e+02...5.995e+02"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "8.799e+02...1.000e+03"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 3},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 4},
-				{at: 11, metric: "vm_rows_read_per_query_count", value: 11},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 12},
 			},
 			want: func() pmetric.ExponentialHistogramDataPoint {
 				point := pmetric.NewExponentialHistogramDataPoint()
-				point.SetCount(11)
+				point.SetCount(12)
+				point.SetZeroCount(1)
 				// sum is estimated due to missing _sum series
 				point.SetSum(15180.05)
 				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond))      // the time in milliseconds -> nanoseconds.
@@ -993,24 +997,27 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 			// We try to handle this gracefully by aggregating across all matching histograms.
 			scrapes: []*scrape{
 				// The first histogram.
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "0...0.000e+00"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "4.084e+02...4.642e+02"}, value: 2},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "5.275e+02...5.995e+02"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "8.799e+02...1.000e+03"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 3},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 4},
 				{at: 11, metric: "vm_rows_read_per_query_sum", value: 1000},
-				{at: 11, metric: "vm_rows_read_per_query_count", value: 11},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 12},
 
 				// Another overlapping histogram in the same scrape.
+				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "0...0.000e+00"}, value: 10},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "8.799e+02...1.000e+03"}, value: 10},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 30},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 40},
 				{at: 11, metric: "vm_rows_read_per_query_sum", value: 2000},
-				{at: 11, metric: "vm_rows_read_per_query_count", value: 80},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 90},
 			},
 			want: func() pmetric.ExponentialHistogramDataPoint {
 				point := pmetric.NewExponentialHistogramDataPoint()
-				point.SetCount(11 + 80)
+				point.SetCount(12 + 90)
+				point.SetZeroCount(1 + 10)
 				point.SetSum(1000 + 2000)
 				point.SetTimestamp(pcommon.Timestamp(11 * time.Millisecond))      // the time in milliseconds -> nanoseconds.
 				point.SetStartTimestamp(pcommon.Timestamp(11 * time.Millisecond)) // the time in milliseconds -> nanoseconds.
