@@ -17,13 +17,18 @@ import (
 	pb "github.com/DataDog/datadog-agent/pkg/proto/pbgo/trace"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receivertest"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	"go.uber.org/multierr"
 	"google.golang.org/protobuf/proto"
 
@@ -183,6 +188,90 @@ func TestDatadogResponse(t *testing.T) {
 	}
 }
 
+func TestDatadogTraces_EndTracesOpSpanCount_MultipleTracerPayloads(t *testing.T) {
+	receiverID := component.NewIDWithName(metadata.Type, "span_count_multiple_tracer_payloads")
+	tt := componenttest.NewTelemetry()
+	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
+
+	cfg := createDefaultConfig().(*Config)
+	cfg.Endpoint = "localhost:0"
+
+	sink := new(consumertest.TracesSink)
+	dd, err := newDataDogReceiver(cfg, receiver.Settings{
+		ID:                receiverID,
+		TelemetrySettings: tt.NewTelemetrySettings(),
+		BuildInfo:         component.NewDefaultBuildInfo(),
+	})
+	require.NoError(t, err)
+	dd.(*datadogReceiver).nextTracesConsumer = sink
+
+	require.NoError(t, dd.Start(context.Background(), componenttest.NewNopHost()))
+	t.Cleanup(func() { require.NoError(t, dd.Shutdown(context.Background())) })
+
+	span1 := &pb.Span{
+		TraceID:  1,
+		SpanID:   11,
+		Name:     "span1",
+		Service:  "svc",
+		Resource: "res1",
+		Start:    100,
+		Duration: 10,
+		Meta:     map[string]string{},
+		Metrics:  map[string]float64{},
+		ParentID: 0,
+		Type:     "",
+		Error:    0,
+	}
+	span2 := &pb.Span{
+		TraceID:  2,
+		SpanID:   22,
+		Name:     "span2",
+		Service:  "svc",
+		Resource: "res2",
+		Start:    200,
+		Duration: 10,
+		Meta:     map[string]string{},
+		Metrics:  map[string]float64{},
+		ParentID: 0,
+		Type:     "",
+		Error:    0,
+	}
+
+	agentPayload := pb.AgentPayload{
+		TracerPayloads: []*pb.TracerPayload{
+			{
+				Chunks: []*pb.TraceChunk{
+					{Spans: []*pb.Span{span1}},
+				},
+			},
+			{
+				Chunks: []*pb.TraceChunk{
+					{Spans: []*pb.Span{span2}},
+				},
+			},
+		},
+	}
+
+	body, err := proto.Marshal(&agentPayload)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("http://%s/api/v0.2/traces", dd.(*datadogReceiver).address),
+		bytes.NewReader(body),
+	)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	require.Len(t, sink.AllTraces(), 2)
+
+	// Expect the total number of spans across all tracer payloads in the request.
+	assertReceiverTraces(t, tt, receiverID, 2, 0)
+}
+
 func TestDatadogInfoEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -315,6 +404,52 @@ func TestDatadogInfoEndpoint(t *testing.T) {
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 		})
 	}
+}
+
+func assertReceiverTraces(t *testing.T, tt *componenttest.Telemetry, id component.ID, accepted, refused int64) {
+	got, err := tt.GetMetric("otelcol_receiver_accepted_spans")
+	require.NoError(t, err)
+	metricdatatest.AssertEqual(t,
+		metricdata.Metrics{
+			Name:        "otelcol_receiver_accepted_spans",
+			Description: "Number of spans successfully pushed into the pipeline. [alpha]",
+			Unit:        "{spans}",
+			Data: metricdata.Sum[int64]{
+				Temporality: metricdata.CumulativeTemporality,
+				IsMonotonic: true,
+				DataPoints: []metricdata.DataPoint[int64]{
+					{
+						Attributes: attribute.NewSet(
+							attribute.String("receiver", id.String()),
+							attribute.String("transport", "http"),
+						),
+						Value: accepted,
+					},
+				},
+			},
+		}, got, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
+
+	got, err = tt.GetMetric("otelcol_receiver_refused_spans")
+	require.NoError(t, err)
+	metricdatatest.AssertEqual(t,
+		metricdata.Metrics{
+			Name:        "otelcol_receiver_refused_spans",
+			Description: "Number of spans that could not be pushed into the pipeline. [alpha]",
+			Unit:        "{spans}",
+			Data: metricdata.Sum[int64]{
+				Temporality: metricdata.CumulativeTemporality,
+				IsMonotonic: true,
+				DataPoints: []metricdata.DataPoint[int64]{
+					{
+						Attributes: attribute.NewSet(
+							attribute.String("receiver", id.String()),
+							attribute.String("transport", "http"),
+						),
+						Value: refused,
+					},
+				},
+			},
+		}, got, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
 }
 
 func TestDatadogMetricsV1_EndToEnd(t *testing.T) {
