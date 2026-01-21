@@ -938,7 +938,7 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 3},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 4},
 				{at: 11, metric: "vm_rows_read_per_query_sum", value: 15582},
-				{at: 11, metric: "vm_rows_read_per_query_count", value: 12},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 1}, // count from _count line is ignored for vmhist
 			},
 			want: func() pmetric.ExponentialHistogramDataPoint {
 				point := pmetric.NewExponentialHistogramDataPoint()
@@ -968,7 +968,7 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "8.799e+02...1.000e+03"}, value: 1},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 3},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 4},
-				{at: 11, metric: "vm_rows_read_per_query_count", value: 12},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 1}, // count from _count line is ignored for vmhist
 			},
 			want: func() pmetric.ExponentialHistogramDataPoint {
 				point := pmetric.NewExponentialHistogramDataPoint()
@@ -1004,7 +1004,7 @@ func TestMetricGroupData_vmToExponentialHistogramUnitTest(t *testing.T) {
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.468e+03...1.668e+03"}, value: 3},
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "1.896e+03...2.154e+03"}, value: 4},
 				{at: 11, metric: "vm_rows_read_per_query_sum", value: 1000},
-				{at: 11, metric: "vm_rows_read_per_query_count", value: 12},
+				{at: 11, metric: "vm_rows_read_per_query_count", value: 1}, // count from _count line is ignored for vmhist
 
 				// Another overlapping histogram in the same scrape.
 				{at: 11, metric: "vm_rows_read_per_query_bucket", extraLabel: labels.Label{Name: "vmrange", Value: "0...0.000e+00"}, value: 10},
